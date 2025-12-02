@@ -17,7 +17,8 @@ import {
   ChevronUp,
   X,
   AlertTriangle,
-  PlusCircle
+  PlusCircle,
+  Globe
 } from 'lucide-react';
 import { FileTable } from './components/FileTable';
 import { listBlobs, uploadBlob, createContainer } from './services/azureService';
@@ -33,8 +34,16 @@ const DEFAULT_GOOGLE_API_KEY = "AIzaSyBjMOADZNDhkp1ubfgJvui5UTnQcnzTBGg";
 // Detecta URL atual automaticamente para facilitar configuração
 const CURRENT_DOMAIN = typeof window !== 'undefined' ? window.location.origin : "https://ps-dsm-cnii-2025-sub-1-1.vercel.app";
 
-// Global declaration for Google Identity Services
-declare const google: any;
+// Interface global para o Window
+interface Window {
+  google?: {
+    accounts: {
+      oauth2: {
+        initTokenClient: (config: any) => any;
+      }
+    }
+  }
+}
 
 export default function App() {
   // --- State ---
@@ -54,8 +63,9 @@ export default function App() {
   });
   
   const [showSettings, setShowSettings] = useState(false);
-  const [showGoogleGuide, setShowGoogleGuide] = useState(false);
+  const [showGoogleGuide, setShowGoogleGuide] = useState(true); // Default open to help user
   const [showCorsModal, setShowCorsModal] = useState(false);
+  const [containerNotFound, setContainerNotFound] = useState(false);
   
   // Validation State for Container Name
   const [containerNameError, setContainerNameError] = useState<string | null>(null);
@@ -104,39 +114,57 @@ export default function App() {
     }
   }, [azureConfig.containerName]);
 
-  // Inicializar Google Auth
+  // Inicializar Google Auth com Retry (Robusto para Vercel)
   useEffect(() => {
-    if (googleConfig.clientId && typeof google !== 'undefined') {
-      try {
-        tokenClient.current = google.accounts.oauth2.initTokenClient({
-          client_id: googleConfig.clientId,
-          scope: 'https://www.googleapis.com/auth/drive.readonly',
-          callback: (response: any) => {
-            if (response.access_token) {
-              setGoogleConfig(prev => ({ ...prev, accessToken: response.access_token }));
-              addLog("Autenticação Google realizada com sucesso!", "SUCCESS");
-              // Usamos o token retornado diretamente
-              fetchGoogleFiles(response.access_token);
-            } else {
-              // Verifica se foi erro de popup fechado ou erro de origem
-              if (response.error) {
-                addLog(`Erro OAuth: ${response.error}`, "ERROR");
-                // Se o erro for invalid_request, geralmente é Origin Mismatch
-                if (response.error === 'invalid_request' || response.error.includes('origin_mismatch')) {
-                    setShowSettings(true);
-                    setShowGoogleGuide(true);
-                    alert(`ERRO DE ORIGEM GOOGLE:\n\nVocê precisa adicionar a URL:\n${CURRENT_DOMAIN}\n\nnas "Origens JavaScript autorizadas" do seu projeto no Google Cloud Console.`);
+    const initGoogle = () => {
+      const g = (window as any).google;
+      if (googleConfig.clientId && g && g.accounts) {
+        try {
+          tokenClient.current = g.accounts.oauth2.initTokenClient({
+            client_id: googleConfig.clientId,
+            scope: 'https://www.googleapis.com/auth/drive.readonly',
+            callback: (response: any) => {
+              if (response.access_token) {
+                setGoogleConfig(prev => ({ ...prev, accessToken: response.access_token }));
+                addLog("Autenticação Google realizada com sucesso!", "SUCCESS");
+                // Usamos o token retornado diretamente
+                fetchGoogleFiles(response.access_token);
+              } else {
+                // Verifica se foi erro de popup fechado ou erro de origem
+                if (response.error) {
+                  addLog(`Erro OAuth: ${response.error}`, "ERROR");
+                  // Se o erro for invalid_request, geralmente é Origin Mismatch
+                  if (response.error === 'invalid_request' || response.error.includes('origin_mismatch')) {
+                      setShowSettings(true);
+                      setShowGoogleGuide(true);
+                      alert(`ERRO DE ORIGEM GOOGLE:\n\nVerifique se a URL:\n${CURRENT_DOMAIN}\n\nestá nas "Origens JavaScript autorizadas" do Google Cloud (SEM BARRA NO FINAL).`);
+                  }
                 }
               }
-            }
-          },
-        });
-        addLog("Sistema de autenticação Google pronto.", "INFO");
-      } catch (e) {
-        console.error(e);
-        addLog(`Erro ao inicializar Google Identity: ${e}`, "ERROR");
+            },
+          });
+          addLog("Sistema de autenticação Google pronto.", "INFO");
+          return true;
+        } catch (e) {
+          console.error(e);
+          addLog(`Erro ao inicializar Google Identity: ${e}`, "ERROR");
+          return false;
+        }
       }
+      return false;
+    };
+
+    // Tenta inicializar imediatamente
+    if (!initGoogle()) {
+      // Se falhar (script ainda carregando), tenta a cada 500ms
+      const intervalId = setInterval(() => {
+        if (initGoogle()) {
+          clearInterval(intervalId);
+        }
+      }, 500);
+      return () => clearInterval(intervalId);
     }
+
   }, [googleConfig.clientId]);
 
   // --- Helpers ---
@@ -162,7 +190,24 @@ export default function App() {
       // Força prompt para garantir seleção de conta e evitar loops silenciosos
       tokenClient.current.requestAccessToken({ prompt: 'consent' });
     } else {
-      addLog("Cliente Google não inicializado. Recarregue a página.", "ERROR");
+      addLog("Aguardando carregamento do sistema Google...", "WARNING");
+      // Tenta recuperar se o cliente não estiver pronto
+      const g = (window as any).google;
+      if (g && g.accounts) {
+        // Tenta reinit rapido
+        try {
+           tokenClient.current = g.accounts.oauth2.initTokenClient({
+            client_id: googleConfig.clientId,
+            scope: 'https://www.googleapis.com/auth/drive.readonly',
+            callback: (res: any) => {
+               if(res.access_token) setGoogleConfig(p => ({...p, accessToken: res.access_token}));
+            }
+           });
+           tokenClient.current.requestAccessToken();
+        } catch(e) {
+           addLog("Cliente Google não inicializado. Recarregue a página.", "ERROR");
+        }
+      }
     }
   };
 
@@ -205,6 +250,7 @@ export default function App() {
     }
     
     setLoadingDest(true);
+    setContainerNotFound(false); // Reset status
     addLog(`Conectando ao Azure (Container: ${azureConfig.containerName})...`, "INFO");
     
     try {
@@ -213,7 +259,8 @@ export default function App() {
       addLog(`Destino: Conectado. ${files.length} arquivos existentes.`, "SUCCESS");
     } catch (err: any) {
       if (err.message.includes("404")) {
-         addLog(`Contêiner '${azureConfig.containerName}' não existe. Crie-o nas configurações.`, "WARNING");
+         addLog(`ERRO 404: Contêiner '${azureConfig.containerName}' NÃO EXISTE no Azure. Crie-o nas configurações.`, "WARNING");
+         setContainerNotFound(true);
          setDestFiles([]); // Limpa lista
       } else {
          addLog(`Falha Azure: ${err.message}`, "ERROR");
@@ -244,6 +291,7 @@ export default function App() {
     try {
       await createContainer(azureConfig);
       addLog(`Contêiner '${containerName}' criado com sucesso!`, "SUCCESS");
+      setContainerNotFound(false);
       // Atualiza automaticamente a lista (que deve vir vazia, mas confirma a conexão)
       setTimeout(handleFetchDest, 1000);
     } catch (err: any) {
@@ -441,7 +489,8 @@ export default function App() {
                                 placeholder="ex: aluno-vinicius"
                                 onChange={(e) => setAzureConfig({...azureConfig, containerName: e.target.value.toLowerCase()})}
                                 className={`flex-1 bg-slate-950 border rounded-md px-3 py-2 text-sm focus:outline-none text-white
-                                  ${containerNameError ? 'border-red-500 focus:border-red-500' : 'border-blue-500/50 focus:border-blue-400'}
+                                  ${containerNameError ? 'border-red-500 focus:border-red-500' : 
+                                    containerNotFound ? 'border-yellow-500 focus:border-yellow-400' : 'border-blue-500/50 focus:border-blue-400'}
                                 `}
                               />
                               <button 
@@ -450,17 +499,25 @@ export default function App() {
                                 className={`px-4 py-2 rounded-md text-xs sm:text-sm font-medium flex items-center justify-center gap-1 transition-colors
                                   ${creatingContainer || !!containerNameError 
                                     ? 'bg-slate-700 text-slate-500 cursor-not-allowed' 
-                                    : 'bg-blue-600 hover:bg-blue-500 text-white'}
+                                    : containerNotFound 
+                                        ? 'bg-yellow-600 hover:bg-yellow-500 text-white animate-pulse'
+                                        : 'bg-blue-600 hover:bg-blue-500 text-white'}
                                 `}
                               >
                                 {creatingContainer ? <RefreshCw className="w-3 h-3 animate-spin"/> : <PlusCircle className="w-4 h-4" />}
-                                Criar
+                                {containerNotFound ? "CRIAR AGORA" : "Criar"}
                               </button>
                             </div>
                             {containerNameError && (
                               <p className="text-[10px] text-red-400 flex items-center gap-1">
                                 <AlertCircle className="w-3 h-3" />
                                 {containerNameError}
+                              </p>
+                            )}
+                             {containerNotFound && !containerNameError && (
+                              <p className="text-[10px] text-yellow-400 flex items-center gap-1 font-bold">
+                                <AlertCircle className="w-3 h-3" />
+                                Contêiner não encontrado. Clique em CRIAR AGORA.
                               </p>
                             )}
                             <p className="text-[10px] text-slate-500">Regras Azure: Letras minúsculas, números e hifens. <strong className="text-red-400">Sem underline (_).</strong></p>
@@ -485,21 +542,30 @@ export default function App() {
                           >
                             <div className="flex items-center gap-2">
                               <HelpCircle className="w-4 h-4 text-green-400" />
-                              <span className="text-xs font-semibold text-slate-300 group-hover:text-white">Ajuda: Corrigir Erro 400</span>
+                              <span className="text-xs font-semibold text-slate-300 group-hover:text-white">Diagnóstico: Erro 400</span>
                             </div>
                             {showGoogleGuide ? <ChevronUp className="w-4 h-4 text-slate-500"/> : <ChevronDown className="w-4 h-4 text-slate-500"/>}
                           </button>
 
                           {showGoogleGuide && (
                             <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3 space-y-3 text-[11px] text-slate-300 leading-relaxed">
-                              <p className="font-bold text-red-400">Se aparecer "Erro 400: invalid_request":</p>
+                              <div className="flex items-center gap-2 text-green-300 mb-2">
+                                <Globe className="w-3 h-3"/>
+                                <strong>Sua URL atual (Origem):</strong>
+                              </div>
+                              
+                              <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-4">
+                                   <code className="flex-1 text-green-300 bg-slate-900 p-2 rounded border border-slate-700 break-all font-mono">{CURRENT_DOMAIN}</code>
+                                   <button onClick={() => copyToClipboard(CURRENT_DOMAIN)} className="text-white bg-slate-700 p-2 rounded hover:bg-slate-600 shrink-0"><Copy className="w-3 h-3"/></button>
+                              </div>
+
+                              <p className="font-bold text-red-400">Instruções para corrigir "Acesso Bloqueado":</p>
                               <ol className="list-decimal list-inside space-y-2 marker:text-green-500">
-                                <li>Acesse <a href="https://console.cloud.google.com/apis/credentials" target="_blank" className="text-blue-400 underline">Google Cloud Console</a>.</li>
-                                <li>Em <strong>"Origens JavaScript"</strong>, adicione:</li>
-                                <li className="flex flex-col sm:flex-row sm:items-center gap-2">
-                                   <code className="text-green-300 bg-slate-900 p-1 rounded border border-slate-700 break-all">{CURRENT_DOMAIN}</code>
-                                   <button onClick={() => copyToClipboard(CURRENT_DOMAIN)} className="text-white bg-slate-700 p-1 rounded hover:bg-slate-600"><Copy className="w-3 h-3"/></button>
-                                </li>
+                                <li>Vá ao <a href="https://console.cloud.google.com/apis/credentials" target="_blank" className="text-blue-400 underline">Google Cloud Console</a>.</li>
+                                <li>Edite a Credencial/Client ID em uso.</li>
+                                <li>Em <strong>"Origens JavaScript autorizadas"</strong>, cole a URL acima.</li>
+                                <li><strong>IMPORTANTE:</strong> Não coloque barra (/) no final.</li>
+                                <li>Aguarde alguns minutos após salvar.</li>
                               </ol>
                             </div>
                           )}
@@ -662,7 +728,7 @@ export default function App() {
                 icon={<Server className="w-5 h-5 text-blue-500" />} 
                 files={destFiles} 
                 isLoading={loadingDest}
-                emptyMessage={!azureConfig.containerName ? "Configure um contêiner" : "Pasta vazia"}
+                emptyMessage={containerNotFound ? "Contêiner não existe. Crie-o." : !azureConfig.containerName ? "Configure um contêiner" : "Pasta vazia"}
              />
           </div>
         </div>
