@@ -1,5 +1,5 @@
 {
   "name": "CloudMigrate Pro",
-  "description": "Ferramenta de migração de arquivos corporativos do Google Drive para o Azure Blob Storage com análise de log via IA.",
+  "description": "Ferramenta de migração de arquivos corporativos do Google Drive para o Azure Blob Storage.",
   "requestFramePermissions": []
 }

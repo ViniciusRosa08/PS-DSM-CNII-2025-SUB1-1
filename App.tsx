@@ -9,23 +9,29 @@ import {
   Terminal, 
   CheckCircle2, 
   AlertCircle,
-  BrainCircuit,
   LogIn,
   Info,
-  ExternalLink,
-  Copy
+  Copy,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp,
+  X,
+  AlertTriangle,
+  PlusCircle
 } from 'lucide-react';
 import { FileTable } from './components/FileTable';
-import { listBlobs, uploadBlob } from './services/azureService';
+import { listBlobs, uploadBlob, createContainer } from './services/azureService';
 import { listDriveFiles, downloadDriveFile } from './services/googleService';
-import { analyzeMigrationLogs } from './services/geminiService';
 import { CloudFile, AzureConfig, TransferItem, TransferStatus, LogEntry, GoogleConfig } from './types';
 
-// Constants - Credenciais fornecidas pelo usuário
+// Constants - Credenciais fornecidas
 const DEFAULT_ACCOUNT_NAME = "stop2cn2";
-// O SAS Token é extraído da BlobSASURL fornecida (tudo após o '?')
 const DEFAULT_SAS_TOKEN = "sv=2024-11-04&ss=bfqt&srt=sco&sp=rwdlacupiytfx&se=2025-12-25T06:02:21Z&st=2025-11-24T21:47:21Z&spr=https&sig=pzsca0jLZTRZNDzAvWlDRcF9dTq6MKHzXTTRQtBNY4U%3D";
-const DEFAULT_CONTAINER_PREFIX = "aluno_";
+const DEFAULT_GOOGLE_CLIENT_ID = "83789597916-40gh712a71scnvf8p9pamumqjaci1100.apps.googleusercontent.com";
+const DEFAULT_GOOGLE_API_KEY = "AIzaSyBjMOADZNDhkp1ubfgJvui5UTnQcnzTBGg";
+
+// Detecta URL atual automaticamente para facilitar configuração
+const CURRENT_DOMAIN = typeof window !== 'undefined' ? window.location.origin : "https://ps-dsm-cnii-2025-sub-1-1.vercel.app";
 
 // Global declaration for Google Identity Services
 declare const google: any;
@@ -36,20 +42,24 @@ export default function App() {
   // Azure Configuration
   const [azureConfig, setAzureConfig] = useState<AzureConfig>({
     accountName: DEFAULT_ACCOUNT_NAME,
-    containerName: "", // Usuário deve preencher (ex: aluno_nome)
+    containerName: "aluno-vinicius", 
     sasToken: DEFAULT_SAS_TOKEN
   });
 
   // Google Configuration
   const [googleConfig, setGoogleConfig] = useState<GoogleConfig>({
-    clientId: "", // Usuário deve preencher no console
-    apiKey: "",   // Usuário deve preencher no console
+    clientId: DEFAULT_GOOGLE_CLIENT_ID, 
+    apiKey: DEFAULT_GOOGLE_API_KEY,   
     accessToken: undefined
   });
   
   const [showSettings, setShowSettings] = useState(false);
-  const [isGoogleReady, setIsGoogleReady] = useState(false);
+  const [showGoogleGuide, setShowGoogleGuide] = useState(false);
+  const [showCorsModal, setShowCorsModal] = useState(false);
   
+  // Validation State for Container Name
+  const [containerNameError, setContainerNameError] = useState<string | null>(null);
+
   // Files
   const [sourceFiles, setSourceFiles] = useState<CloudFile[]>([]);
   const [destFiles, setDestFiles] = useState<CloudFile[]>([]);
@@ -57,6 +67,7 @@ export default function App() {
   // Loading States
   const [loadingSource, setLoadingSource] = useState(false);
   const [loadingDest, setLoadingDest] = useState(false);
+  const [creatingContainer, setCreatingContainer] = useState(false);
   const [isTransferring, setIsTransferring] = useState(false);
   
   // Transfer Logic
@@ -65,10 +76,6 @@ export default function App() {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const tokenClient = useRef<any>(null);
 
-  // AI
-  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
-  const [analyzing, setAnalyzing] = useState(false);
-
   // --- Effects ---
 
   // Auto-scroll logs
@@ -76,7 +83,28 @@ export default function App() {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
-  // Initialize Google Token Client when Client ID changes
+  // Carregar Azure automaticamente se estiver configurado
+  useEffect(() => {
+    if (azureConfig.accountName && azureConfig.sasToken) {
+       handleFetchDest();
+    }
+  }, []);
+
+  // Validate Container Name on Change
+  useEffect(() => {
+    const name = azureConfig.containerName;
+    if (name.includes('_')) {
+      setContainerNameError("O Azure PROÍBE underline (_). Use hífen (-).");
+    } else if (/[^a-z0-9-]/.test(name)) {
+      setContainerNameError("Apenas letras minúsculas, números e hífen (-).");
+    } else if (name.length < 3) {
+      setContainerNameError("Mínimo de 3 caracteres.");
+    } else {
+      setContainerNameError(null);
+    }
+  }, [azureConfig.containerName]);
+
+  // Inicializar Google Auth
   useEffect(() => {
     if (googleConfig.clientId && typeof google !== 'undefined') {
       try {
@@ -86,16 +114,24 @@ export default function App() {
           callback: (response: any) => {
             if (response.access_token) {
               setGoogleConfig(prev => ({ ...prev, accessToken: response.access_token }));
-              addLog("Login no Google realizado com sucesso!", "SUCCESS");
-              setIsGoogleReady(true);
-              // Fetch files immediately after login
+              addLog("Autenticação Google realizada com sucesso!", "SUCCESS");
+              // Usamos o token retornado diretamente
               fetchGoogleFiles(response.access_token);
             } else {
-              addLog("Erro na autenticação Google.", "ERROR");
+              // Verifica se foi erro de popup fechado ou erro de origem
+              if (response.error) {
+                addLog(`Erro OAuth: ${response.error}`, "ERROR");
+                // Se o erro for invalid_request, geralmente é Origin Mismatch
+                if (response.error === 'invalid_request' || response.error.includes('origin_mismatch')) {
+                    setShowSettings(true);
+                    setShowGoogleGuide(true);
+                    alert(`ERRO DE ORIGEM GOOGLE:\n\nVocê precisa adicionar a URL:\n${CURRENT_DOMAIN}\n\nnas "Origens JavaScript autorizadas" do seu projeto no Google Cloud Console.`);
+                }
+              }
             }
           },
         });
-        addLog("Cliente Google OAuth inicializado.", "INFO");
+        addLog("Sistema de autenticação Google pronto.", "INFO");
       } catch (e) {
         console.error(e);
         addLog(`Erro ao inicializar Google Identity: ${e}`, "ERROR");
@@ -118,26 +154,36 @@ export default function App() {
 
   const handleGoogleLogin = () => {
     if (!googleConfig.clientId || !googleConfig.apiKey) {
-      addLog("CONFIGURAÇÃO NECESSÁRIA: Insira seu Client ID e API Key do Google nas Configurações.", "WARNING");
+      addLog("CONFIGURAÇÃO NECESSÁRIA: Chaves de API não configuradas.", "ERROR");
       setShowSettings(true);
       return;
     }
     if (tokenClient.current) {
-      tokenClient.current.requestAccessToken();
+      // Força prompt para garantir seleção de conta e evitar loops silenciosos
+      tokenClient.current.requestAccessToken({ prompt: 'consent' });
     } else {
-      addLog("Cliente Google não inicializado. Verifique se o Client ID está correto.", "ERROR");
+      addLog("Cliente Google não inicializado. Recarregue a página.", "ERROR");
     }
   };
 
   const fetchGoogleFiles = async (token: string) => {
+    if (!token || !googleConfig.apiKey) {
+        addLog("Token ou Chave ausentes. Faça login.", "WARNING");
+        return;
+    }
+
     setLoadingSource(true);
-    addLog("Buscando lista de arquivos no Google Drive...", "INFO");
+    addLog("Listando arquivos do Google Drive...", "INFO");
     try {
       const files = await listDriveFiles(token, googleConfig.apiKey);
       setSourceFiles(files);
-      addLog(`Sucesso: ${files.length} arquivos encontrados no Google Drive.`, "SUCCESS");
+      addLog(`Origem: ${files.length} arquivos encontrados.`, "SUCCESS");
     } catch (err: any) {
-      addLog(`Falha ao buscar arquivos Google: ${err.message}`, "ERROR");
+      addLog(`Falha ao buscar Google: ${err.message}`, "ERROR");
+      // Se der erro de autenticação, remove o token inválido
+      if (err.message.includes("401") || err.message.includes("403")) {
+          setGoogleConfig(prev => ({ ...prev, accessToken: undefined }));
+      }
     } finally {
       setLoadingSource(false);
     }
@@ -153,50 +199,79 @@ export default function App() {
 
   const handleFetchDest = async () => {
     if (!azureConfig.containerName) {
-      addLog("CONFIGURAÇÃO NECESSÁRIA: Insira o nome do Contêiner Azure (ex: aluno_xxx).", "WARNING");
+      addLog("Configure o nome do contêiner Azure.", "WARNING");
       setShowSettings(true);
       return;
     }
     
     setLoadingDest(true);
-    addLog(`Conectando ao Azure Blob Storage (Container: ${azureConfig.containerName})...`, "INFO");
+    addLog(`Conectando ao Azure (Container: ${azureConfig.containerName})...`, "INFO");
     
     try {
       const files = await listBlobs(azureConfig);
       setDestFiles(files);
-      addLog(`Conectado ao Azure! ${files.length} arquivos encontrados no destino.`, "SUCCESS");
+      addLog(`Destino: Conectado. ${files.length} arquivos existentes.`, "SUCCESS");
     } catch (err: any) {
-      addLog(`Falha na conexão Azure: ${err.message}`, "ERROR");
       if (err.message.includes("404")) {
-         addLog(`Dica: Verifique se o contêiner '${azureConfig.containerName}' realmente existe na conta '${azureConfig.accountName}'.`, "WARNING");
-      } else if (err.message.includes("Failed to fetch") || err.message.includes("NetworkError")) {
-         addLog(`ALERTA DE CORS: O navegador foi bloqueado pelo Azure. Verifique a aba 'Configurações' > 'Configuração CORS'.`, "WARNING");
+         addLog(`Contêiner '${azureConfig.containerName}' não existe. Crie-o nas configurações.`, "WARNING");
+         setDestFiles([]); // Limpa lista
+      } else {
+         addLog(`Falha Azure: ${err.message}`, "ERROR");
+         if (err.message.includes("Failed to fetch") || err.message.includes("NetworkError")) {
+            setShowCorsModal(true);
+         }
       }
     } finally {
       setLoadingDest(false);
     }
   };
 
-  const handleStartMigration = async () => {
-    if (sourceFiles.length === 0) {
-      addLog("Nenhum arquivo de origem para migrar.", "WARNING");
+  const handleCreateContainer = async () => {
+    const containerName = azureConfig.containerName.toLowerCase().trim();
+    
+    if (containerNameError) {
+      addLog(`Nome inválido: ${containerNameError}`, "WARNING");
       return;
     }
+
+    if (!containerName) {
+      addLog("Defina um nome válido para o contêiner.", "WARNING");
+      return;
+    }
+
+    setCreatingContainer(true);
+    addLog(`Criando contêiner '${containerName}' no Azure...`, "INFO");
+    try {
+      await createContainer(azureConfig);
+      addLog(`Contêiner '${containerName}' criado com sucesso!`, "SUCCESS");
+      // Atualiza automaticamente a lista (que deve vir vazia, mas confirma a conexão)
+      setTimeout(handleFetchDest, 1000);
+    } catch (err: any) {
+      let msg = err.message;
+      if (msg.includes("Failed to fetch")) msg = "Bloqueio CORS Azure (Mas verifique se o nome é único)";
+      else if (msg.includes("409")) msg = "Este contêiner já existe.";
+      
+      addLog(`Erro ao criar contêiner: ${msg}`, "ERROR");
+      if (msg.includes("CORS")) setShowCorsModal(true);
+    } finally {
+      setCreatingContainer(false);
+    }
+  };
+
+  const handleStartMigration = async () => {
+    if (sourceFiles.length === 0) return;
     if (!azureConfig.containerName) {
-      addLog("Contêiner de destino não configurado.", "ERROR");
       setShowSettings(true);
       return;
     }
     if (!googleConfig.accessToken) {
-      addLog("Sessão do Google expirada. Faça login novamente.", "ERROR");
+      addLog("Sessão expirada. Faça login no Google novamente.", "ERROR");
       return;
     }
 
     setIsTransferring(true);
-    addLog(">>> INICIANDO SEQUÊNCIA DE MIGRAÇÃO <<<", "INFO");
-    setAiAnalysis(null);
+    addLog(">>> INICIANDO MIGRAÇÃO DE ARQUIVOS <<<", "INFO");
 
-    // Initialize Queue
     const queue: TransferItem[] = sourceFiles.map(f => ({
       file: f,
       status: TransferStatus.PENDING,
@@ -204,70 +279,78 @@ export default function App() {
     }));
     setTransferQueue(queue);
 
-    // Process Queue
     for (let i = 0; i < queue.length; i++) {
       const item = queue[i];
-      
-      // Update status to In Progress
       setTransferQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: TransferStatus.IN_PROGRESS } : q));
-      addLog(`Processando arquivo ${i + 1}/${queue.length}: ${item.file.name}`, "INFO");
+      addLog(`Transferindo ${i + 1}/${queue.length}: ${item.file.name}`, "INFO");
 
       try {
-        // 1. Download from Google (Real)
-        addLog(`Baixando do Google Drive...`, "INFO");
-        const blob = await downloadDriveFile(item.file.id, googleConfig.accessToken, googleConfig.apiKey, item.file.mimeType);
+        // 1. Download / Exportação (Lógica robusta)
+        const isWorkspace = item.file.mimeType.includes("google-apps");
         
-        // Attach real content to file object
-        const fileWithContent = { ...item.file, content: blob };
+        const blob = await downloadDriveFile(
+            item.file.id, 
+            googleConfig.accessToken, 
+            googleConfig.apiKey, 
+            item.file.mimeType
+        );
+        
+        // 2. Renomear arquivo baseado no BLOB recebido (Extensão correta)
+        let destFileName = item.file.name;
+        const blobType = blob.type; 
 
-        // 2. Upload to Azure
-        addLog(`Enviando para Azure Blob Storage...`, "INFO");
+        if (isWorkspace) {
+            const lowerName = destFileName.toLowerCase();
+            // Adiciona .pdf se for documento ou apresentação e ainda não tiver
+            if (blobType.includes('pdf') && !lowerName.endsWith('.pdf')) {
+                destFileName += '.pdf';
+            } 
+            // Adiciona .xlsx se for planilha e ainda não tiver
+            else if (blobType.includes('spreadsheet') && !lowerName.endsWith('.xlsx')) {
+                destFileName += '.xlsx';
+            }
+        }
+
+        const fileWithContent: CloudFile = { 
+            ...item.file, 
+            name: destFileName, 
+            mimeType: blobType, // Usa o mime type real do arquivo baixado (ex: application/pdf)
+            content: blob 
+        };
+
+        // 3. Upload Azure
         await uploadBlob(fileWithContent, azureConfig, (progress) => {
           setTransferQueue(prev => prev.map((q, idx) => idx === i ? { ...q, progress } : q));
         });
         
-        // Success
         setTransferQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: TransferStatus.COMPLETED, progress: 100 } : q));
-        addLog(`SUCESSO: ${item.file.name} migrado.`, "SUCCESS");
+        addLog(`Sucesso: Arquivo salvo como ${destFileName}`, "SUCCESS");
         
       } catch (err: any) {
-        // Error
         let msg = err.message;
-        if (msg.includes("NetworkError") || msg.includes("Failed to fetch")) {
-           msg = "Erro de Rede/CORS. Verifique as configurações do Azure.";
-        }
+        if (msg.includes("Failed to fetch")) msg = "Bloqueio CORS Azure";
         setTransferQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: TransferStatus.ERROR, message: msg } : q));
-        addLog(`ERRO ao transferir ${item.file.name}: ${msg}`, "ERROR");
+        addLog(`ERRO na transferência: ${msg}`, "ERROR");
       }
     }
 
     setIsTransferring(false);
-    addLog(">>> MIGRAÇÃO FINALIZADA <<<", "INFO");
-    handleFetchDest(); // Refresh destination
+    addLog("Migração finalizada.", "INFO");
+    handleFetchDest(); 
   };
-
-  const handleAiAnalysis = async () => {
-    if (logs.length === 0) return;
-    setAnalyzing(true);
-    const result = await analyzeMigrationLogs(logs);
-    setAiAnalysis(result);
-    setAnalyzing(false);
-  };
-
-  // --- Render ---
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-blue-500/30">
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-blue-500/30 overflow-x-hidden">
       {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-blue-600 p-2 rounded-lg">
-              <Cloud className="w-6 h-6 text-white" />
+            <div className="bg-blue-600 p-2 rounded-lg shrink-0">
+              <Cloud className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
             </div>
             <div>
-              <h1 className="font-bold text-lg leading-tight tracking-tight text-white">CloudMigrate Pro</h1>
-              <p className="text-xs text-slate-400">Google Drive para Azure Blob Storage</p>
+              <h1 className="font-bold text-base sm:text-lg leading-tight tracking-tight text-white">CloudMigrate Pro</h1>
+              <p className="text-[10px] sm:text-xs text-slate-400">Drive to Azure</p>
             </div>
           </div>
           
@@ -285,150 +368,191 @@ export default function App() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto p-4 space-y-6">
+      <main className="w-full max-w-7xl mx-auto p-2 sm:p-4 space-y-4 sm:space-y-6">
         
-        {/* Settings Panel */}
+        {/* CORS ERROR MODAL */}
+        {showCorsModal && (
+           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+             <div className="bg-slate-900 border border-red-500/50 rounded-xl p-0 w-[95%] max-w-lg shadow-2xl relative overflow-hidden flex flex-col max-h-[90vh]">
+               <div className="bg-red-500/10 border-b border-red-500/20 p-4 sm:p-6 flex items-start gap-4">
+                  <div className="bg-red-500/20 p-2 sm:p-3 rounded-full shrink-0">
+                    <AlertTriangle className="w-6 h-6 sm:w-8 sm:h-8 text-red-500" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg sm:text-xl font-bold text-white mb-1">Bloqueio de Segurança Azure (CORS)</h2>
+                    <p className="text-slate-300 text-xs sm:text-sm">
+                       O servidor do Azure recusou a conexão. Isso é comum se o domínio Vercel não foi liberado lá.
+                    </p>
+                  </div>
+                  <button onClick={() => setShowCorsModal(false)} className="text-slate-400 hover:text-white absolute top-4 right-4">
+                    <X className="w-6 h-6" />
+                  </button>
+               </div>
+               <div className="p-4 sm:p-6 overflow-y-auto space-y-4 text-xs sm:text-sm text-slate-300">
+                 <p className="font-semibold text-white">Soluções possíveis:</p>
+                 <ul className="list-disc list-inside space-y-2">
+                   <li>O professor precisa autorizar o domínio <code>{CURRENT_DOMAIN}</code> no CORS da Storage Account.</li>
+                   <li>Se isso não for possível, teste rodando localmente (Localhost) ou peça para o administrador do Azure liberar acesso.</li>
+                 </ul>
+               </div>
+               <div className="p-4 border-t border-slate-800 bg-slate-900/50 flex justify-end">
+                 <button onClick={() => setShowCorsModal(false)} className="bg-slate-700 text-white px-4 py-2 rounded text-sm">Fechar</button>
+               </div>
+             </div>
+           </div>
+        )}
+
+        {/* Settings Modal */}
         {showSettings && (
-          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 shadow-2xl animate-in fade-in slide-in-from-top-4 mb-6">
-             <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
-               <Settings className="w-6 h-6 text-slate-400" />
-               Painel de Configuração
-             </h2>
-             
-             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {/* Azure Settings */}
-                <div className="space-y-4">
-                  <h3 className="text-white font-semibold flex items-center gap-2 border-b border-slate-700 pb-2 text-sm uppercase tracking-wide">
-                    <Server className="w-4 h-4 text-blue-400" />
-                    Azure Blob Storage
-                  </h3>
-                  
-                  {/* CORS GUIDE */}
-                  <div className="bg-blue-900/20 border border-blue-800/50 rounded-lg p-4 space-y-2">
-                    <div className="flex items-start gap-2">
-                       <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
-                       <h4 className="text-sm font-semibold text-blue-300">Configuração Obrigatória (CORS)</h4>
-                    </div>
-                    <p className="text-[11px] text-slate-300 leading-relaxed">
-                       Para rodar sem backend, vá ao <strong>Portal Azure > Storage Account > Resource Sharing (CORS)</strong> e adicione esta regra na aba "Blob service":
-                    </p>
-                    <ul className="text-[10px] text-slate-400 space-y-1 list-disc pl-4 font-mono">
-                       <li>Allowed origins: <span className="text-green-400">*</span> (ou seu domínio Vercel)</li>
-                       <li>Allowed methods: <span className="text-green-400">GET, PUT, OPTIONS</span></li>
-                       <li>Allowed headers: <span className="text-green-400">*</span> (Importante!)</li>
-                       <li>Exposed headers: <span className="text-green-400">*</span></li>
-                       <li>Max age: <span className="text-green-400">86400</span></li>
-                    </ul>
-                  </div>
+          <div className="fixed inset-0 z-50 flex items-start justify-center pt-10 sm:pt-20 bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+             <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 sm:p-6 shadow-2xl w-full max-w-3xl relative">
+                <button 
+                  onClick={() => setShowSettings(false)}
+                  className="absolute top-4 right-4 text-slate-500 hover:text-white"
+                >
+                  <X className="w-6 h-6" />
+                </button>
 
-                  <div className="space-y-3">
-                    <label className="text-xs font-medium text-slate-400 uppercase">Nome da Conta</label>
-                    <input 
-                      type="text" 
-                      value={azureConfig.accountName}
-                      readOnly
-                      className="w-full bg-slate-950/50 border border-slate-700 rounded-md px-3 py-2 text-sm text-slate-500 cursor-not-allowed font-mono"
-                    />
-                  </div>
-                  <div className="space-y-3">
-                    <label className="text-xs font-medium text-slate-400 uppercase">Nome do Contêiner (Obrigatório)</label>
-                    <div className="flex gap-2">
-                      <input 
-                        type="text" 
-                        value={azureConfig.containerName}
-                        placeholder="Ex: aluno_joao"
-                        onChange={(e) => setAzureConfig({...azureConfig, containerName: e.target.value})}
-                        className="flex-1 bg-slate-950 border border-blue-500/50 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-blue-400 text-white shadow-[0_0_10px_rgba(59,130,246,0.1)]"
-                      />
+                 <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                   <Settings className="w-6 h-6 text-slate-400" />
+                   Painel de Configuração
+                 </h2>
+                 
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    {/* Azure Settings */}
+                    <div className="space-y-4">
+                      <h3 className="text-white font-semibold flex items-center gap-2 border-b border-slate-700 pb-2 text-sm uppercase tracking-wide">
+                        <Server className="w-4 h-4 text-blue-400" />
+                        Azure Blob Storage
+                      </h3>
+                      
+                      <div className="bg-blue-900/20 border border-blue-500/20 rounded p-3 text-xs text-blue-300">
+                        <Info className="w-3 h-3 inline mr-1" />
+                        Credenciais carregadas automaticamente.
+                      </div>
+
+                      <div className="space-y-3">
+                        <label className="text-xs font-medium text-slate-400 uppercase">Nome do Contêiner (Obrigatório)</label>
+                        <div className="flex flex-col gap-2">
+                            <div className="flex flex-col sm:flex-row gap-2">
+                              <input 
+                                type="text" 
+                                value={azureConfig.containerName}
+                                placeholder="ex: aluno-vinicius"
+                                onChange={(e) => setAzureConfig({...azureConfig, containerName: e.target.value.toLowerCase()})}
+                                className={`flex-1 bg-slate-950 border rounded-md px-3 py-2 text-sm focus:outline-none text-white
+                                  ${containerNameError ? 'border-red-500 focus:border-red-500' : 'border-blue-500/50 focus:border-blue-400'}
+                                `}
+                              />
+                              <button 
+                                onClick={handleCreateContainer}
+                                disabled={creatingContainer || !!containerNameError}
+                                className={`px-4 py-2 rounded-md text-xs sm:text-sm font-medium flex items-center justify-center gap-1 transition-colors
+                                  ${creatingContainer || !!containerNameError 
+                                    ? 'bg-slate-700 text-slate-500 cursor-not-allowed' 
+                                    : 'bg-blue-600 hover:bg-blue-500 text-white'}
+                                `}
+                              >
+                                {creatingContainer ? <RefreshCw className="w-3 h-3 animate-spin"/> : <PlusCircle className="w-4 h-4" />}
+                                Criar
+                              </button>
+                            </div>
+                            {containerNameError && (
+                              <p className="text-[10px] text-red-400 flex items-center gap-1">
+                                <AlertCircle className="w-3 h-3" />
+                                {containerNameError}
+                              </p>
+                            )}
+                            <p className="text-[10px] text-slate-500">Regras Azure: Letras minúsculas, números e hifens. <strong className="text-red-400">Sem underline (_).</strong></p>
+                        </div>
+                      </div>
                     </div>
-                    <p className="text-[10px] text-slate-500">
-                      * O contêiner deve ser criado manualmente no portal antes.
-                    </p>
-                  </div>
-                  <div className="space-y-3">
-                    <label className="text-xs font-medium text-slate-400 uppercase">SAS Token</label>
-                    <textarea 
-                      value={azureConfig.sasToken}
-                      readOnly
-                      rows={2}
-                      className="w-full bg-slate-950/50 border border-slate-700 rounded-md px-3 py-2 text-[10px] font-mono text-slate-600 cursor-not-allowed resize-none"
-                    />
-                  </div>
+
+                    {/* Google Settings */}
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between border-b border-slate-700 pb-2">
+                        <h3 className="text-white font-semibold flex items-center gap-2 text-sm uppercase tracking-wide">
+                            <Cloud className="w-4 h-4 text-green-400" />
+                            Google Drive API
+                        </h3>
+                      </div>
+                      
+                      {/* REAL CONFIGURATION */}
+                      <div className="space-y-4">
+                          <button 
+                            onClick={() => setShowGoogleGuide(!showGoogleGuide)}
+                            className="w-full text-left bg-slate-800/50 hover:bg-slate-800 border border-slate-700 p-3 rounded-lg flex items-center justify-between transition-all group"
+                          >
+                            <div className="flex items-center gap-2">
+                              <HelpCircle className="w-4 h-4 text-green-400" />
+                              <span className="text-xs font-semibold text-slate-300 group-hover:text-white">Ajuda: Corrigir Erro 400</span>
+                            </div>
+                            {showGoogleGuide ? <ChevronUp className="w-4 h-4 text-slate-500"/> : <ChevronDown className="w-4 h-4 text-slate-500"/>}
+                          </button>
+
+                          {showGoogleGuide && (
+                            <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3 space-y-3 text-[11px] text-slate-300 leading-relaxed">
+                              <p className="font-bold text-red-400">Se aparecer "Erro 400: invalid_request":</p>
+                              <ol className="list-decimal list-inside space-y-2 marker:text-green-500">
+                                <li>Acesse <a href="https://console.cloud.google.com/apis/credentials" target="_blank" className="text-blue-400 underline">Google Cloud Console</a>.</li>
+                                <li>Em <strong>"Origens JavaScript"</strong>, adicione:</li>
+                                <li className="flex flex-col sm:flex-row sm:items-center gap-2">
+                                   <code className="text-green-300 bg-slate-900 p-1 rounded border border-slate-700 break-all">{CURRENT_DOMAIN}</code>
+                                   <button onClick={() => copyToClipboard(CURRENT_DOMAIN)} className="text-white bg-slate-700 p-1 rounded hover:bg-slate-600"><Copy className="w-3 h-3"/></button>
+                                </li>
+                              </ol>
+                            </div>
+                          )}
+
+                          <div className="space-y-3">
+                            <label className="text-xs font-medium text-slate-400 uppercase">Client ID</label>
+                            <input 
+                              type="text" 
+                              value={googleConfig.clientId}
+                              onChange={(e) => setGoogleConfig({...googleConfig, clientId: e.target.value})}
+                              className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-sm text-white font-mono"
+                            />
+                          </div>
+                          <div className="space-y-3">
+                            <label className="text-xs font-medium text-slate-400 uppercase">API Key</label>
+                            <input 
+                              type="password" 
+                              value={googleConfig.apiKey}
+                              onChange={(e) => setGoogleConfig({...googleConfig, apiKey: e.target.value})}
+                              className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-sm font-mono text-slate-400"
+                            />
+                          </div>
+                      </div>
+                    </div>
                 </div>
 
-                {/* Google Settings */}
-                <div className="space-y-4">
-                  <h3 className="text-white font-semibold flex items-center gap-2 border-b border-slate-700 pb-2 text-sm uppercase tracking-wide">
-                    <Cloud className="w-4 h-4 text-green-400" />
-                    Google Drive API
-                  </h3>
-                  
-                  <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 space-y-3">
-                     <div className="flex items-center justify-between">
-                        <span className="text-[10px] text-slate-400 uppercase font-bold">Origem Permitida</span>
-                        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1">
-                          Console Google <ExternalLink className="w-3 h-3" />
-                        </a>
-                     </div>
-                     <p className="text-[11px] text-slate-400">
-                       Copie esta URL e adicione em "Origens JavaScript autorizadas" no seu Client ID:
-                     </p>
-                     <div className="flex gap-2">
-                       <code className="flex-1 text-xs text-green-300 font-mono bg-slate-900 px-3 py-2 rounded border border-slate-700 overflow-x-auto whitespace-nowrap">
-                         {window.location.origin}
-                       </code>
-                       <button onClick={() => copyToClipboard(window.location.origin)} className="bg-slate-700 hover:bg-slate-600 text-slate-200 p-2 rounded transition-colors" title="Copiar URL">
-                         <Copy className="w-4 h-4" />
-                       </button>
-                     </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <label className="text-xs font-medium text-slate-400 uppercase">Client ID (OAuth 2.0)</label>
-                    <input 
-                      type="text" 
-                      placeholder="Ex: 123456-abcde.apps.googleusercontent.com"
-                      value={googleConfig.clientId}
-                      onChange={(e) => setGoogleConfig({...googleConfig, clientId: e.target.value})}
-                      className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-green-500 text-white font-mono"
-                    />
-                  </div>
-                  <div className="space-y-3">
-                    <label className="text-xs font-medium text-slate-400 uppercase">API Key</label>
-                    <input 
-                      type="password" 
-                      placeholder="Ex: AIzaSyD..."
-                      value={googleConfig.apiKey}
-                      onChange={(e) => setGoogleConfig({...googleConfig, apiKey: e.target.value})}
-                      className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-sm font-mono text-slate-400 focus:outline-none focus:border-green-500"
-                    />
-                  </div>
+                <div className="mt-8 pt-6 border-t border-slate-800 flex justify-end">
+                  <button 
+                    onClick={() => setShowSettings(false)}
+                    className="w-full sm:w-auto bg-slate-700 hover:bg-slate-600 text-white px-8 py-3 rounded-lg text-sm font-medium transition-colors shadow-lg hover:shadow-slate-700/50"
+                  >
+                    Salvar e Fechar
+                  </button>
                 </div>
-            </div>
-
-            <div className="mt-8 pt-6 border-t border-slate-800 flex justify-end">
-              <button 
-                onClick={() => setShowSettings(false)}
-                className="bg-slate-700 hover:bg-slate-600 text-white px-8 py-2.5 rounded-lg text-sm font-medium transition-colors shadow-lg hover:shadow-slate-700/50"
-              >
-                Salvar Configurações
-              </button>
-            </div>
+             </div>
           </div>
         )}
 
-        {/* Workspace Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-[600px]">
+        {/* Workspace Grid - RESPONSIVE LAYOUT CHANGE */}
+        {/* Mobile: Flex Column (Stacked) | Desktop: Grid 12 cols */}
+        <div className="flex flex-col lg:grid lg:grid-cols-12 gap-6 h-auto lg:h-[600px]">
           
           {/* Left: Source */}
-          <div className="lg:col-span-4 h-full flex flex-col gap-4">
+          <div className="lg:col-span-4 h-[400px] lg:h-full flex flex-col gap-3">
              <div className="flex items-center justify-between px-1">
                 <div className="flex items-center gap-2">
                   <h2 className="text-slate-300 font-medium text-sm">Origem</h2>
                   {googleConfig.accessToken ? (
-                    <span className="text-[10px] bg-green-500/20 text-green-400 px-2 py-0.5 rounded-full border border-green-500/30">Conectado</span>
+                    <span className="text-[10px] bg-green-500/20 text-green-400 px-2 py-0.5 rounded-full border border-green-500/30">
+                      Conectado
+                    </span>
                   ) : (
-                    <span className="text-[10px] bg-slate-700 text-slate-400 px-2 py-0.5 rounded-full">Desconectado</span>
+                    <span className="text-[10px] bg-slate-700 text-slate-400 px-2 py-0.5 rounded-full">Off</span>
                   )}
                 </div>
                 
@@ -447,27 +571,22 @@ export default function App() {
                 icon={<Cloud className="w-5 h-5 text-green-500" />} 
                 files={sourceFiles} 
                 isLoading={loadingSource}
-                emptyMessage={!googleConfig.accessToken ? "Faça login para ver seus arquivos" : "Nenhum arquivo encontrado"}
+                emptyMessage={!googleConfig.accessToken ? "Faça login para listar" : "Nenhum arquivo encontrado"}
              />
           </div>
 
           {/* Center: Controls & Status */}
-          <div className="lg:col-span-4 h-full flex flex-col gap-4">
-            <div className="flex-none bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg flex flex-col items-center justify-center text-center space-y-4">
-              <div className="p-4 bg-slate-800/50 rounded-full">
-                <ArrowRight className={`w-8 h-8 text-slate-400 ${isTransferring ? 'animate-pulse text-blue-400' : ''}`} />
-              </div>
-              <div>
-                <h3 className="text-white font-semibold">Controle de Migração</h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  {isTransferring ? 'Transferindo arquivos...' : 'Pronto para iniciar'}
-                </p>
+          <div className="lg:col-span-4 h-auto lg:h-full flex flex-col gap-4 order-last lg:order-none">
+            {/* Control Panel */}
+            <div className="flex-none bg-slate-900 border border-slate-800 rounded-xl p-4 sm:p-6 shadow-lg flex flex-col items-center justify-center text-center space-y-4">
+              <div className="p-3 sm:p-4 bg-slate-800/50 rounded-full">
+                <ArrowRight className={`w-6 h-6 sm:w-8 sm:h-8 text-slate-400 ${isTransferring ? 'animate-pulse text-blue-400' : ''} rotate-90 lg:rotate-0`} />
               </div>
               
               <button
                 onClick={handleStartMigration}
                 disabled={isTransferring || sourceFiles.length === 0}
-                className={`w-full flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-bold text-white transition-all transform active:scale-95
+                className={`w-full flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-bold text-white text-sm sm:text-base transition-all transform active:scale-95
                   ${isTransferring || sourceFiles.length === 0 
                     ? 'bg-slate-700 cursor-not-allowed opacity-50' 
                     : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-lg shadow-blue-500/20'
@@ -488,25 +607,27 @@ export default function App() {
             </div>
 
             {/* Transfer List */}
-            <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col">
+            <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col min-h-[250px] lg:min-h-0">
               <div className="p-3 border-b border-slate-800 bg-slate-800/50 text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                Status da Transferência
+                Fila de Transferência
               </div>
               <div className="flex-1 overflow-y-auto p-2 space-y-2">
                 {transferQueue.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-slate-600 space-y-2 opacity-50">
+                  <div className="h-full flex flex-col items-center justify-center text-slate-600 space-y-2 opacity-50 p-4">
                     <Cloud className="w-8 h-8" />
-                    <span className="text-xs">Aguardando início...</span>
+                    <span className="text-xs text-center">Os arquivos aparecerão aqui durante a migração.</span>
                   </div>
                 ) : (
                   transferQueue.map((item, idx) => (
                     <div key={idx} className="bg-slate-950 p-3 rounded border border-slate-800 text-xs">
                       <div className="flex justify-between items-center mb-2">
-                        <span className="truncate text-slate-300 max-w-[150px]">{item.file.name}</span>
-                        {item.status === TransferStatus.COMPLETED && <CheckCircle2 className="w-4 h-4 text-green-500" />}
-                        {item.status === TransferStatus.ERROR && <AlertCircle className="w-4 h-4 text-red-500" />}
-                        {item.status === TransferStatus.IN_PROGRESS && <span className="text-blue-400 font-mono">{Math.round(item.progress)}%</span>}
-                        {item.status === TransferStatus.PENDING && <span className="text-slate-600">Fila</span>}
+                        <span className="truncate text-slate-300 max-w-[150px] font-medium">{item.file.name}</span>
+                        <div className="flex items-center gap-2">
+                            {item.status === TransferStatus.COMPLETED && <CheckCircle2 className="w-4 h-4 text-green-500" />}
+                            {item.status === TransferStatus.ERROR && <AlertCircle className="w-4 h-4 text-red-500" />}
+                            {item.status === TransferStatus.IN_PROGRESS && <span className="text-blue-400 font-mono">{Math.round(item.progress)}%</span>}
+                            {item.status === TransferStatus.PENDING && <span className="text-slate-600">...</span>}
+                        </div>
                       </div>
                       <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
                         <div 
@@ -526,13 +647,13 @@ export default function App() {
           </div>
 
           {/* Right: Destination */}
-          <div className="lg:col-span-4 h-full flex flex-col gap-4">
+          <div className="lg:col-span-4 h-[400px] lg:h-full flex flex-col gap-3">
              <div className="flex items-center justify-between px-1">
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 truncate max-w-[200px]">
                   <h2 className="text-slate-300 font-medium text-sm">Destino</h2>
-                  {azureConfig.containerName && <span className="text-[10px] text-slate-500">({azureConfig.containerName})</span>}
+                  {azureConfig.containerName && <span className="text-[10px] text-slate-500 truncate">({azureConfig.containerName})</span>}
                 </div>
-                <button onClick={handleFetchDest} disabled={loadingDest || isTransferring} className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                <button onClick={handleFetchDest} disabled={loadingDest || isTransferring} className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 shrink-0">
                   <RefreshCw className={`w-3 h-3 ${loadingDest ? 'animate-spin' : ''}`} /> Atualizar
                 </button>
              </div>
@@ -541,25 +662,25 @@ export default function App() {
                 icon={<Server className="w-5 h-5 text-blue-500" />} 
                 files={destFiles} 
                 isLoading={loadingDest}
-                emptyMessage={!azureConfig.containerName ? "Configure o nome do contêiner" : "Nenhum blob encontrado"}
+                emptyMessage={!azureConfig.containerName ? "Configure um contêiner" : "Pasta vazia"}
              />
           </div>
         </div>
 
-        {/* Bottom: Console & AI */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-64">
+        {/* Bottom: Console (Expanded) */}
+        <div className="h-64">
            {/* Terminal */}
-           <div className="lg:col-span-2 bg-slate-950 border border-slate-800 rounded-xl flex flex-col font-mono text-xs overflow-hidden shadow-inner">
+           <div className="w-full h-full bg-slate-950 border border-slate-800 rounded-xl flex flex-col font-mono text-xs overflow-hidden shadow-inner">
              <div className="px-4 py-2 bg-slate-900 border-b border-slate-800 flex items-center gap-2 text-slate-400">
                <Terminal className="w-4 h-4" />
-               <span>Log do Sistema</span>
+               <span>Log de Operações do Sistema</span>
              </div>
              <div className="flex-1 overflow-y-auto p-4 space-y-1">
-                {logs.length === 0 && <div className="text-slate-600 italic">Sistema inicializado. Pronto.</div>}
+                {logs.length === 0 && <div className="text-slate-600 italic">Sistema inicializado. Aguardando comandos.</div>}
                 {logs.map((log, i) => (
                   <div key={i} className="flex gap-2">
-                    <span className="text-slate-500">[{log.timestamp}]</span>
-                    <span className={`
+                    <span className="text-slate-500 shrink-0">[{log.timestamp}]</span>
+                    <span className={`shrink-0 font-bold
                       ${log.level === 'ERROR' ? 'text-red-400' : ''}
                       ${log.level === 'SUCCESS' ? 'text-green-400' : ''}
                       ${log.level === 'WARNING' ? 'text-yellow-400' : ''}
@@ -567,43 +688,11 @@ export default function App() {
                     `}>
                       {log.level}:
                     </span>
-                    <span className="text-slate-300">{log.message}</span>
+                    <span className="text-slate-300 break-words">{log.message}</span>
                   </div>
                 ))}
                 <div ref={logsEndRef} />
              </div>
-           </div>
-
-           {/* AI Insight */}
-           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col relative overflow-hidden">
-              <div className="flex items-center justify-between mb-4">
-                 <div className="flex items-center gap-2 text-purple-400 font-semibold">
-                    <BrainCircuit className="w-5 h-5" />
-                    <span>Análise Gemini IA</span>
-                 </div>
-                 {logs.length > 0 && !analyzing && (
-                   <button onClick={handleAiAnalysis} className="text-xs bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 px-2 py-1 rounded transition-colors">
-                     Gerar Relatório
-                   </button>
-                 )}
-              </div>
-              
-              <div className="flex-1 overflow-y-auto text-sm text-slate-300 leading-relaxed">
-                {analyzing ? (
-                   <div className="flex flex-col items-center justify-center h-full text-purple-400 gap-2">
-                     <RefreshCw className="w-6 h-6 animate-spin" />
-                     <span className="text-xs">Gerando insights...</span>
-                   </div>
-                ) : aiAnalysis ? (
-                   <div className="prose prose-invert prose-sm">
-                      <p className="whitespace-pre-line">{aiAnalysis}</p>
-                   </div>
-                ) : (
-                   <div className="h-full flex items-center justify-center text-center text-slate-600 text-xs p-4 border border-dashed border-slate-800 rounded-lg">
-                     Realize uma migração para obter análise de desempenho e erros via IA.
-                   </div>
-                )}
-              </div>
            </div>
         </div>
 

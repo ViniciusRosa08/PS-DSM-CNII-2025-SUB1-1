@@ -5,6 +5,34 @@ const getContainerUrl = (config: AzureConfig) => {
   return `https://${config.accountName}.blob.core.windows.net/${config.containerName}`;
 };
 
+export const createContainer = async (config: AzureConfig): Promise<void> => {
+  if (!config.containerName) throw new Error("Nome do contêiner obrigatório.");
+
+  // Endpoint para Criar Container: PUT com parâmetro restype=container
+  const url = `${getContainerUrl(config)}?restype=container&${config.sasToken}`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        'x-ms-date': new Date().toUTCString(),
+        'x-ms-version': '2020-04-08' // Versão da API compatível
+      }
+    });
+
+    if (!response.ok) {
+      // 409 Conflict = O contêiner já existe (não é exatamente um erro crítico, mas avisamos)
+      if (response.status === 409) {
+        throw new Error("Este contêiner já existe.");
+      }
+      throw new Error(`Erro ao criar contêiner: ${response.statusText} (${response.status})`);
+    }
+  } catch (error) {
+    console.error("Erro createContainer:", error);
+    throw error;
+  }
+};
+
 export const listBlobs = async (config: AzureConfig): Promise<CloudFile[]> => {
   if (!config.containerName) throw new Error("Nome do contêiner não fornecido");
 
@@ -20,7 +48,7 @@ export const listBlobs = async (config: AzureConfig): Promise<CloudFile[]> => {
 
     if (!response.ok) {
       if (response.status === 404) {
-        throw new Error(`Contêiner '${config.containerName}' não encontrado (404). Crie-o no Azure Portal.`);
+        throw new Error(`Contêiner '${config.containerName}' não encontrado (404).`);
       }
       throw new Error(`Falha na listagem do Azure: ${response.statusText} (${response.status})`);
     }
