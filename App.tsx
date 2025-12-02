@@ -18,7 +18,8 @@ import {
   X,
   AlertTriangle,
   PlusCircle,
-  Globe
+  Globe,
+  ShieldAlert
 } from 'lucide-react';
 import { FileTable } from './components/FileTable';
 import { listBlobs, uploadBlob, createContainer } from './services/azureService';
@@ -123,6 +124,7 @@ export default function App() {
           tokenClient.current = g.accounts.oauth2.initTokenClient({
             client_id: googleConfig.clientId,
             scope: 'https://www.googleapis.com/auth/drive.readonly',
+            ux_mode: 'popup',
             callback: (response: any) => {
               if (response.access_token) {
                 setGoogleConfig(prev => ({ ...prev, accessToken: response.access_token }));
@@ -137,7 +139,7 @@ export default function App() {
                   if (response.error === 'invalid_request' || response.error.includes('origin_mismatch')) {
                       setShowSettings(true);
                       setShowGoogleGuide(true);
-                      alert(`ERRO DE ORIGEM GOOGLE:\n\nVerifique se a URL:\n${CURRENT_DOMAIN}\n\nestá nas "Origens JavaScript autorizadas" do Google Cloud (SEM BARRA NO FINAL).`);
+                      alert(`ERRO DE ORIGEM GOOGLE:\n\nVerifique se a URL:\n${CURRENT_DOMAIN}\n\nestá nas "Origens JavaScript autorizadas" do Google Cloud (SEM BARRA NO FINAL).\n\nVerifique também se o tipo do aplicativo é "Aplicação Web".`);
                   }
                 }
               }
@@ -199,6 +201,7 @@ export default function App() {
            tokenClient.current = g.accounts.oauth2.initTokenClient({
             client_id: googleConfig.clientId,
             scope: 'https://www.googleapis.com/auth/drive.readonly',
+            ux_mode: 'popup',
             callback: (res: any) => {
                if(res.access_token) setGoogleConfig(p => ({...p, accessToken: res.access_token}));
             }
@@ -542,7 +545,7 @@ export default function App() {
                           >
                             <div className="flex items-center gap-2">
                               <HelpCircle className="w-4 h-4 text-green-400" />
-                              <span className="text-xs font-semibold text-slate-300 group-hover:text-white">Diagnóstico: Erro 400</span>
+                              <span className="text-xs font-semibold text-slate-300 group-hover:text-white">Diagnóstico: Erro Google 400</span>
                             </div>
                             {showGoogleGuide ? <ChevronUp className="w-4 h-4 text-slate-500"/> : <ChevronDown className="w-4 h-4 text-slate-500"/>}
                           </button>
@@ -559,14 +562,18 @@ export default function App() {
                                    <button onClick={() => copyToClipboard(CURRENT_DOMAIN)} className="text-white bg-slate-700 p-2 rounded hover:bg-slate-600 shrink-0"><Copy className="w-3 h-3"/></button>
                               </div>
 
-                              <p className="font-bold text-red-400">Instruções para corrigir "Acesso Bloqueado":</p>
-                              <ol className="list-decimal list-inside space-y-2 marker:text-green-500">
-                                <li>Vá ao <a href="https://console.cloud.google.com/apis/credentials" target="_blank" className="text-blue-400 underline">Google Cloud Console</a>.</li>
-                                <li>Edite a Credencial/Client ID em uso.</li>
-                                <li>Em <strong>"Origens JavaScript autorizadas"</strong>, cole a URL acima.</li>
-                                <li><strong>IMPORTANTE:</strong> Não coloque barra (/) no final.</li>
-                                <li>Aguarde alguns minutos após salvar.</li>
-                              </ol>
+                              <div className="flex items-start gap-2 text-red-400 bg-red-900/10 p-2 rounded border border-red-500/20 mb-2">
+                                <ShieldAlert className="w-4 h-4 mt-0.5 shrink-0" />
+                                <div>
+                                  <p className="font-bold">Checklist Obrigatório:</p>
+                                  <ul className="list-disc list-inside space-y-1 mt-1 text-[10px]">
+                                    <li>Adicione a URL acima nas <strong>Origens JavaScript</strong> (NÃO no URI de redirecionamento).</li>
+                                    <li><strong>Sem barra</strong> no final (/).</li>
+                                    <li>Tipo do aplicativo deve ser <strong>"Aplicação da Web"</strong> (Web Application).</li>
+                                    <li>Se o projeto estiver em <strong>"Teste"</strong>, adicione seu email aos usuários de teste.</li>
+                                  </ul>
+                                </div>
+                              </div>
                             </div>
                           )}
 
@@ -578,6 +585,9 @@ export default function App() {
                               onChange={(e) => setGoogleConfig({...googleConfig, clientId: e.target.value})}
                               className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-sm text-white font-mono"
                             />
+                            {googleConfig.clientId.includes('8378') && (
+                               <p className="text-[10px] text-yellow-500">Nota: O nome 'SoloQuest' na tela de login pertence a este ID. É normal.</p>
+                            )}
                           </div>
                           <div className="space-y-3">
                             <label className="text-xs font-medium text-slate-400 uppercase">API Key</label>
